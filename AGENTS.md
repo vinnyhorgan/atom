@@ -21,16 +21,18 @@ control rods, a temperature system, and a meltdown state.
 ```
 atom/
 ├── main.lua    — All game logic: physics, rendering, input, UI
+├── atom3d.lua  — Interactive 3D uranium atom viewer (powered by g3d)
 ├── conf.lua    — LÖVE2D window/engine configuration
 ├── flux.lua    — Tweening library (third-party, MIT license, by rxi)
-└── flux.md     — Documentation for the flux tweening library
+├── flux.md     — Documentation for the flux tweening library
+└── g3d/        — 3D engine library (third-party, MIT license, by groverburger)
 ```
 
 ## Architecture
 
-This is a single-file game. All simulation state, rendering, and input handling
-lives in `main.lua`. There is no ECS, no scene graph — just flat tables of
-entities updated in `love.update(dt)` and drawn in `love.draw()`.
+The simulation logic lives in `main.lua`, with the 3D atom viewer split into
+`atom3d.lua`. There is no ECS, no scene graph — just flat tables of entities
+updated in `love.update(dt)` and drawn in `love.draw()`.
 
 ### Key Concepts
 
@@ -79,6 +81,7 @@ entities updated in `love.update(dt)` and drawn in `love.draw()`.
 | **Up / Down**      | Adjust control rod insertion ±10%   |
 | **+ / -**          | Adjust simulation speed (0.25–5×)   |
 | **A**              | Add 5 more U-235 atoms              |
+| **V**              | Toggle 3D atom viewer               |
 
 ## Coding Conventions
 
@@ -100,7 +103,7 @@ Requires [LÖVE2D](https://love2d.org/) 11.x installed on your system.
 
 ## Editing Guidelines
 
-- `flux.lua` and `flux.md` are **third-party vendored files** — do not modify
+- `flux.lua`, `flux.md`, and `g3d/` are **third-party vendored files** — do not modify
 - All simulation tuning knobs are in the constants block at the top of `main.lua`
   (lines ~10–45). Tweak these before touching logic.
 - When adding new entity types, follow the existing pattern: a table-of-tables

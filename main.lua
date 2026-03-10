@@ -3,6 +3,7 @@
 -- made with <3 by vinny
 
 local flux = require "flux"
+local atom3dViewer = require "atom3d"
 
 ---------------------------------------------------------------------
 -- Constants & tuning
@@ -87,6 +88,7 @@ local energyDisplay = { value = 0 }
 local tempDisplay   = { value = 0 }
 local reactorTemp   = 0
 local meltdown      = false
+local atom3dBtnRect = nil
 
 -- Particle systems
 local glowPS, sparkPS, flashPS
@@ -131,6 +133,7 @@ function love.load()
 
     initParticleSystems()
     spawnAtoms(30)
+    atom3dViewer.load(fontSmall)
 end
 
 function initParticleSystems()
@@ -385,6 +388,8 @@ end
 -- Update
 ---------------------------------------------------------------------
 function love.update(dt)
+    atom3dViewer.update(dt)
+
     if paused then
         flux.update(dt) -- still animate UI
         glowPS:update(dt)
@@ -601,25 +606,32 @@ function love.draw()
     love.graphics.push()
     love.graphics.translate(sx, sy)
 
-    drawReactor()
-    drawNeutronSource()
-    drawControlRods()
-    drawTrails()
-    drawAtoms()
-    drawFragments()
-    drawNeutrons()
-    drawFlashes()
-    drawParticles()
+    if atom3dViewer.active then
+        drawReactor()
+        atom3dViewer.draw(REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
+    else
+        drawReactor()
+        drawNeutronSource()
+        drawControlRods()
+        drawTrails()
+        drawAtoms()
+        drawFragments()
+        drawNeutrons()
+        drawFlashes()
+        drawParticles()
+    end
 
     love.graphics.pop()
 
     drawSidebar()
 
-    if paused then
-        drawPauseOverlay()
-    end
-    if meltdown then
-        drawMeltdownOverlay()
+    if not atom3dViewer.active then
+        if paused then
+            drawPauseOverlay()
+        end
+        if meltdown then
+            drawMeltdownOverlay()
+        end
     end
 end
 
@@ -962,6 +974,7 @@ function drawSidebar()
         { key = "SPACE", desc = "Pause" },
         { key = "R",     desc = "Reset reactor" },
         { key = "A",     desc = "Add fuel (U-235)" },
+        { key = "V",     desc = "3D atom view" },
     }
     local cardH = #controls * 20 + 10
     love.graphics.setColor(0.055, 0.065, 0.085, 0.9)
@@ -1019,6 +1032,28 @@ function drawSidebar()
         love.graphics.printf(status, pad, y, SIDEBAR_W - pad * 2, "center")
     end
     y = y + 28
+
+    -- 3D Viewer button
+    local btnW = SIDEBAR_W - pad * 2 - 20
+    local btnH = 28
+    local btnX = pad + 10
+    local btnY = y
+    atom3dBtnRect = {x = btnX, y = btnY, w = btnW, h = btnH}
+
+    local mx, my = love.mouse.getPosition()
+    local btnHover = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
+    local btnBg = atom3dViewer.active
+        and (btnHover and {0.2, 0.5, 0.3} or {0.15, 0.4, 0.25})
+        or  (btnHover and {0.15, 0.2, 0.35} or {0.1, 0.15, 0.25})
+    love.graphics.setColor(btnBg)
+    love.graphics.rectangle("fill", btnX, btnY, btnW, btnH, 5, 5)
+    love.graphics.setColor(0.2, 0.3, 0.4, 0.8)
+    love.graphics.rectangle("line", btnX, btnY, btnW, btnH, 5, 5)
+    love.graphics.setFont(fontSmall)
+    love.graphics.setColor(0.7, 0.8, 0.9)
+    local btnText = atom3dViewer.active and "✕  CLOSE 3D VIEW  (V)" or "⚛  VIEW 3D ATOM  (V)"
+    love.graphics.printf(btnText, btnX, btnY + 6, btnW, "center")
+    y = y + btnH + 8
 
     -- Footer: "made with <3 by vinny" with colored parts
     love.graphics.setFont(fontSmall)
@@ -1092,6 +1127,20 @@ end
 -- Input
 ---------------------------------------------------------------------
 function love.mousepressed(x, y, button)
+    -- 3D viewer button
+    if button == 1 and atom3dBtnRect then
+        local r = atom3dBtnRect
+        if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+            atom3dViewer.toggle()
+            return
+        end
+    end
+    -- 3D viewer camera drag
+    if atom3dViewer.active then
+        if atom3dViewer.mousepressed(x, y, button, REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H) then
+            return
+        end
+    end
     if button == 1 and inReactor(x, y) then
         fireNeutron(x, y)
     end
@@ -1122,7 +1171,21 @@ function love.keypressed(key)
         simSpeed = clamp(simSpeed - 0.25, 0.25, 5.0)
     elseif key == "a" then
         addAtoms(5)
+    elseif key == "v" then
+        atom3dViewer.toggle()
     end
+end
+
+function love.mousereleased(x, y, button)
+    atom3dViewer.mousereleased(x, y, button)
+end
+
+function love.mousemoved(x, y, dx, dy)
+    atom3dViewer.mousemoved(x, y, dx, dy)
+end
+
+function love.wheelmoved(x, y)
+    atom3dViewer.wheelmoved(x, y, REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
 end
 
 function resetReactor()
