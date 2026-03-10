@@ -477,10 +477,18 @@ function love.update(dt)
                 sparkPS:emit(3)
             end
 
-            -- Collide with atoms? (probabilistic interaction model)
+            -- Collide with atoms?
             if n.alive then
                 for _, atom in ipairs(atoms) do
                     if atom.alive and dist(n.x, n.y, atom.x, atom.y) < CAPTURE_RADIUS then
+                        -- User-fired neutrons (gen 0) always fission on first contact
+                        if n.generation == 0 then
+                            n.alive = false
+                            triggerFission(atom, n)
+                            break
+                        end
+
+                        -- Chain-reaction neutrons: probabilistic interaction model
                         local energy = n.energy or 2.0
                         -- Thermal factor: thermal neutrons have ~300x higher cross-section
                         local thermalFactor = 1.0 / (1.0 + energy * 5)
@@ -513,9 +521,11 @@ function love.update(dt)
                                 n.vx = math.cos(scatterAngle) * currentSpeed
                                 n.vy = math.sin(scatterAngle) * currentSpeed
                                 n.energy = energy * (0.4 + love.math.random() * 0.4)
-                                -- Push out of capture radius
                                 n.x = atom.x + math.cos(scatterAngle) * (CAPTURE_RADIUS + 2)
                                 n.y = atom.y + math.sin(scatterAngle) * (CAPTURE_RADIUS + 2)
+                                -- Scatter spark feedback
+                                sparkPS:setPosition(atom.x, atom.y)
+                                sparkPS:emit(4)
                             end
                         end
                         break
