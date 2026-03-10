@@ -335,22 +335,39 @@ end
 -- Fire neutron (user action)
 ---------------------------------------------------------------------
 function fireNeutron(tx, ty)
-    local sx = REACTOR_X + 10
-    local sy = REACTOR_Y + REACTOR_H / 2
-    local angle = math.atan2(ty - sy, tx - sx)
+    -- Aim toward the nearest alive atom for user control
+    local bestDist = math.huge
+    local bestAtom = nil
+    for _, a in ipairs(atoms) do
+        if a.alive then
+            local d = dist(tx, ty, a.x, a.y)
+            if d < bestDist then
+                bestDist = d
+                bestAtom = a
+            end
+        end
+    end
+
+    local angle
+    if bestAtom then
+        angle = math.atan2(bestAtom.y - ty, bestAtom.x - tx)
+    else
+        angle = randomAngle()
+    end
+
     local spd = NEUTRON_SPEED * 1.2
     table.insert(neutrons, {
-        x = sx, y = sy,
+        x = tx, y = ty,
         vx = math.cos(angle) * spd,
         vy = math.sin(angle) * spd,
         alive = true,
         age = 0,
         generation = 0,
-        energy = 0.025, -- thermal neutron from moderated beam port source
+        energy = 0.025, -- thermal neutron
     })
     neutronsFired = neutronsFired + 1
 
-    sparkPS:setPosition(sx, sy)
+    sparkPS:setPosition(tx, ty)
     sparkPS:emit(8)
 end
 
@@ -611,7 +628,6 @@ function love.draw()
         atom3dViewer.draw(REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
     else
         drawReactor()
-        drawNeutronSource()
         drawControlRods()
         drawTrails()
         drawAtoms()
@@ -967,7 +983,7 @@ function drawSidebar()
     -- Controls help
     love.graphics.setFont(fontSmall)
     local controls = {
-        { key = "CLICK", desc = "Fire neutron" },
+        { key = "CLICK", desc = "Inject neutron" },
         { key = "C",     desc = "Toggle ctrl rods" },
         { key = "UP/DN", desc = "Adjust rods" },
         { key = "+/-",   desc = "Sim speed" },
@@ -1051,7 +1067,7 @@ function drawSidebar()
     love.graphics.rectangle("line", btnX, btnY, btnW, btnH, 5, 5)
     love.graphics.setFont(fontSmall)
     love.graphics.setColor(0.7, 0.8, 0.9)
-    local btnText = atom3dViewer.active and "✕  CLOSE 3D VIEW  (V)" or "⚛  VIEW 3D ATOM  (V)"
+    local btnText = atom3dViewer.active and "CLOSE 3D VIEW  (V)" or "VIEW 3D ATOM  (V)"
     love.graphics.printf(btnText, btnX, btnY + 6, btnW, "center")
     y = y + btnH + 8
 
@@ -1115,11 +1131,16 @@ function drawMeltdownOverlay()
     local flash = math.abs(math.sin(t * 4))
     love.graphics.setColor(1, 0.1, 0.05, flash * 0.2)
     love.graphics.rectangle("fill", 0, 0, W, H)
-    love.graphics.setColor(1, 0.2, 0.1, 0.9)
+
+    -- Dark backdrop behind text for readability
+    love.graphics.setColor(0, 0, 0, 0.7)
+    love.graphics.rectangle("fill", REACTOR_X + 20, REACTOR_Y + REACTOR_H/2 - 60, REACTOR_W - 40, 100, 8, 8)
+
+    love.graphics.setColor(1, 1, 1, 0.95)
     love.graphics.setFont(fontHuge)
     love.graphics.printf("!! MELTDOWN !!", REACTOR_X, REACTOR_Y + REACTOR_H / 2 - 50, REACTOR_W, "center")
     love.graphics.setFont(fontMed)
-    love.graphics.setColor(1, 0.6, 0.4)
+    love.graphics.setColor(1, 0.8, 0.5)
     love.graphics.printf("Core temperature critical! Press R to reset.", REACTOR_X, REACTOR_Y + REACTOR_H / 2 + 10, REACTOR_W, "center")
 end
 
@@ -1232,5 +1253,18 @@ function love.resize(w, h)
     for _, fl in ipairs(flashes) do
         fl.x = REACTOR_X + (fl.x - oldRX) / oldRW * REACTOR_W
         fl.y = REACTOR_Y + (fl.y - oldRY) / oldRH * REACTOR_H
+    end
+
+    -- Maintain atom density: add fuel when reactor area increases
+    local oldArea = oldRW * oldRH
+    local newArea = REACTOR_W * REACTOR_H
+    if newArea > oldArea then
+        local aliveCount = 0
+        for _, a in ipairs(atoms) do if a.alive then aliveCount = aliveCount + 1 end end
+        local targetCount = math.ceil(aliveCount * newArea / oldArea)
+        local toAdd = targetCount - aliveCount
+        if toAdd > 0 then
+            addAtoms(toAdd)
+        end
     end
 end
