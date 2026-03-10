@@ -16,6 +16,15 @@ local REACTOR_W = W - REACTOR_X - MARGIN
 local REACTOR_H = H - MARGIN * 2
 local BOTTOM_Y = REACTOR_Y + REACTOR_H + 12
 
+local function updateLayout()
+    W, H = love.graphics.getDimensions()
+    REACTOR_X = SIDEBAR_W + MARGIN
+    REACTOR_Y = MARGIN
+    REACTOR_W = W - REACTOR_X - MARGIN
+    REACTOR_H = H - MARGIN * 2
+    BOTTOM_Y = REACTOR_Y + REACTOR_H + 12
+end
+
 -- Physics
 local NEUTRON_SPEED       = 220   -- px/s base speed
 local NEUTRON_RADIUS      = 3
@@ -23,7 +32,9 @@ local ATOM_RADIUS         = 18
 local FISSION_PRODUCT_R   = 12
 local CAPTURE_RADIUS      = ATOM_RADIUS + NEUTRON_RADIUS
 local FISSION_ENERGY      = 200   -- MeV per fission event
-local NEUTRONS_PER_FISSION = {2, 3} -- random range
+local NEUTRONS_PER_FISSION = {2, 3} -- random range (avg 2.43 for U-235)
+local MODERATION_RATE     = 6.0   -- energy decay rate (simulates water moderator)
+local DELAYED_NEUTRON_FRAC = 0.0065 -- beta-effective for U-235
 
 -- Control rod geometry
 local NUM_CONTROL_RODS    = 5
@@ -53,6 +64,7 @@ local neutrons    = {}   -- {x, y, vx, vy, alive, age}
 local fragments   = {}   -- fission products {x, y, vx, vy, radius, alive, alpha, r, g, b}
 local flashes     = {}   -- {x, y, radius, alpha}
 local trails      = {}   -- neutron trails {x, y, alpha}
+local delayedNeutrons = {} -- delayed neutron queue {x, y, spawnTime, energy}
 
 local totalEnergy     = 0
 local fissionCount    = 0
@@ -108,6 +120,7 @@ local function lerp(a, b, t) return a + (b - a) * t end
 -- Initialization
 ---------------------------------------------------------------------
 function love.load()
+    updateLayout()
     love.window.setTitle("Atom")
     love.graphics.setBackgroundColor(unpack(COLOR_BG))
 
@@ -203,6 +216,37 @@ function spawnAtoms(count)
     end
 end
 
+function addAtoms(count)
+    local margin = ATOM_RADIUS * 3
+    for i = 1, count do
+        local placed = false
+        local attempts = 0
+        while not placed and attempts < 200 do
+            local ax = REACTOR_X + margin + love.math.random() * (REACTOR_W - margin * 2)
+            local ay = REACTOR_Y + margin + love.math.random() * (REACTOR_H - margin * 2)
+            local ok = true
+            for _, a in ipairs(atoms) do
+                if a.alive and dist(ax, ay, a.x, a.y) < ATOM_RADIUS * 3 then
+                    ok = false
+                    break
+                end
+            end
+            if ok then
+                table.insert(atoms, {
+                    x = ax, y = ay,
+                    radius = ATOM_RADIUS,
+                    alive = true,
+                    glow = 0,
+                    pulsePhase = love.math.random() * math.pi * 2,
+                    wobble = { x = 0, y = 0 },
+                })
+                placed = true
+            end
+            attempts = attempts + 1
+        end
+    end
+end
+
 ---------------------------------------------------------------------
 -- Fission event
 ---------------------------------------------------------------------
@@ -257,17 +301,30 @@ function triggerFission(atom, neutron)
     -- Spawn new neutrons (chain reaction!)
     local numNew = love.math.random(NEUTRONS_PER_FISSION[1], NEUTRONS_PER_FISSION[2])
     for i = 1, numNew do
-        local a = randomAngle()
-        local spd = NEUTRON_SPEED * (0.8 + love.math.random() * 0.6)
-        table.insert(neutrons, {
-            x = atom.x + math.cos(a) * ATOM_RADIUS,
-            y = atom.y + math.sin(a) * ATOM_RADIUS,
-            vx = math.cos(a) * spd,
-            vy = math.sin(a) * spd,
-            alive = true,
-            age = 0,
-            generation = (neutron.generation or 0) + 1,
-        })
+        -- Delayed neutrons (beta-effective ~ 0.0065 for U-235)
+        if love.math.random() < DELAYED_NEUTRON_FRAC then
+            local delay = 0.2 + love.math.random() * 12
+            table.insert(delayedNeutrons, {
+                x = atom.x, y = atom.y,
+                spawnTime = love.timer.getTime() + delay,
+                energy = 0.4, -- delayed neutrons have lower energy
+                generation = (neutron.generation or 0) + 1,
+            })
+        else
+            -- Prompt neutron (immediate, fast)
+            local a = randomAngle()
+            local spd = NEUTRON_SPEED * (0.8 + love.math.random() * 0.6)
+            table.insert(neutrons, {
+                x = atom.x + math.cos(a) * ATOM_RADIUS,
+                y = atom.y + math.sin(a) * ATOM_RADIUS,
+                vx = math.cos(a) * spd,
+                vy = math.sin(a) * spd,
+                alive = true,
+                age = 0,
+                generation = (neutron.generation or 0) + 1,
+                energy = 2.0, -- prompt fission neutrons: ~2 MeV
+            })
+        end
     end
 end
 
@@ -286,6 +343,7 @@ function fireNeutron(tx, ty)
         alive = true,
         age = 0,
         generation = 0,
+        energy = 0.1, -- pre-moderated from beam port source
     })
     neutronsFired = neutronsFired + 1
 
@@ -341,8 +399,8 @@ function love.update(dt)
     glowPS:update(sdt)
     sparkPS:update(sdt)
 
-    -- Cool reactor slowly
-    reactorTemp = math.max(0, reactorTemp - 2 * sdt)
+    -- Reactor cooling (Newton's law of cooling + small constant drain)
+    reactorTemp = math.max(0, reactorTemp * (1 - 0.004 * sdt) - 0.5 * sdt)
     flux.to(tempDisplay, 0.5, { value = reactorTemp }):ease("linear")
 
     -- Check meltdown
@@ -350,13 +408,38 @@ function love.update(dt)
         meltdown = true
     end
 
+    -- Process delayed neutron queue
+    local now = love.timer.getTime()
+    for i = #delayedNeutrons, 1, -1 do
+        local dn = delayedNeutrons[i]
+        if now >= dn.spawnTime then
+            local a = randomAngle()
+            local spd = NEUTRON_SPEED * 0.6
+            table.insert(neutrons, {
+                x = dn.x, y = dn.y,
+                vx = math.cos(a) * spd,
+                vy = math.sin(a) * spd,
+                alive = true,
+                age = 0,
+                generation = dn.generation or 1,
+                energy = dn.energy,
+            })
+            table.remove(delayedNeutrons, i)
+        end
+    end
+
     -- Update neutrons
     local aliveCount = 0
     for i = #neutrons, 1, -1 do
         local n = neutrons[i]
         if n.alive then
-            n.x = n.x + n.vx * sdt
-            n.y = n.y + n.vy * sdt
+            -- Neutron energy moderation (simulates water moderator)
+            n.energy = (n.energy or 2.0) * math.exp(-MODERATION_RATE * sdt)
+
+            -- Speed scales with sqrt of kinetic energy (E = 0.5mv^2)
+            local speedScale = 0.2 + 0.8 * math.min(1.0, math.sqrt((n.energy or 2.0) / 2.0))
+            n.x = n.x + n.vx * speedScale * sdt
+            n.y = n.y + n.vy * speedScale * sdt
             n.age = n.age + sdt
 
             -- Trail
@@ -394,12 +477,47 @@ function love.update(dt)
                 sparkPS:emit(3)
             end
 
-            -- Collide with atoms?
+            -- Collide with atoms? (probabilistic interaction model)
             if n.alive then
                 for _, atom in ipairs(atoms) do
                     if atom.alive and dist(n.x, n.y, atom.x, atom.y) < CAPTURE_RADIUS then
-                        n.alive = false
-                        triggerFission(atom, n)
+                        local energy = n.energy or 2.0
+                        -- Thermal factor: thermal neutrons have ~300x higher cross-section
+                        local thermalFactor = 1.0 / (1.0 + energy * 20)
+                        -- Doppler broadening (negative temperature coefficient)
+                        local dopplerFactor = 1.0 / (1.0 + reactorTemp * 0.002)
+
+                        -- Total interaction probability (σ_total scales with energy)
+                        local interactionProb = 0.15 + 0.80 * thermalFactor
+
+                        if love.math.random() < interactionProb then
+                            -- Fission: σ_f/σ_total (thermal: ~84%, fast: ~21%)
+                            local fissionProb = (0.20 + 0.64 * thermalFactor) * dopplerFactor
+                            -- Capture: σ_γ/σ_total (thermal: ~14%, fast: ~2%)
+                            local captureProb = 0.02 + 0.12 * thermalFactor
+
+                            local roll = love.math.random()
+                            if roll < fissionProb then
+                                -- FISSION
+                                n.alive = false
+                                triggerFission(atom, n)
+                            elseif roll < fissionProb + captureProb then
+                                -- RADIATIVE CAPTURE (absorbed, no fission)
+                                n.alive = false
+                                sparkPS:setPosition(n.x, n.y)
+                                sparkPS:emit(3)
+                            else
+                                -- ELASTIC SCATTER (redirect, lose energy)
+                                local scatterAngle = randomAngle()
+                                local currentSpeed = math.sqrt(n.vx*n.vx + n.vy*n.vy)
+                                n.vx = math.cos(scatterAngle) * currentSpeed
+                                n.vy = math.sin(scatterAngle) * currentSpeed
+                                n.energy = energy * (0.3 + love.math.random() * 0.4)
+                                -- Push out of capture radius
+                                n.x = atom.x + math.cos(scatterAngle) * (CAPTURE_RADIUS + 2)
+                                n.y = atom.y + math.sin(scatterAngle) * (CAPTURE_RADIUS + 2)
+                            end
+                        end
                         break
                     end
                 end
@@ -474,6 +592,7 @@ function love.draw()
     love.graphics.translate(sx, sy)
 
     drawReactor()
+    drawNeutronSource()
     drawControlRods()
     drawTrails()
     drawAtoms()
@@ -521,6 +640,60 @@ function drawReactor()
         love.graphics.setColor(1, 0.2, 0.05, intensity * 0.15)
         love.graphics.rectangle("fill", REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H, 8, 8)
     end
+end
+
+function drawNeutronSource()
+    local srcX = REACTOR_X + 10
+    local srcY = REACTOR_Y + REACTOR_H / 2
+    local t = love.timer.getTime()
+    local pulse = 0.5 + 0.5 * math.sin(t * 2.5)
+
+    local mx, my = love.mouse.getPosition()
+    local mouseInReactor = inReactor(mx, my)
+    local hoverGlow = mouseInReactor and 0.2 or 0
+
+    -- Outer glow
+    love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.06 + pulse * 0.06 + hoverGlow * 0.1)
+    love.graphics.circle("fill", srcX, srcY, 24 + pulse * 4)
+
+    -- Pulsing ring
+    love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.2 + pulse * 0.15 + hoverGlow)
+    love.graphics.setLineWidth(1.5)
+    love.graphics.circle("line", srcX, srcY, 10 + pulse * 3)
+
+    -- Inner glow
+    love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.3 + pulse * 0.2 + hoverGlow)
+    love.graphics.circle("fill", srcX, srcY, 5)
+
+    -- Core bright dot
+    love.graphics.setColor(0.7, 0.9, 1.0, 0.8 + pulse * 0.2)
+    love.graphics.circle("fill", srcX, srcY, 2)
+
+    -- Animated direction chevrons
+    for i = 0, 1 do
+        local phase = (t * 1.5 + i * 0.5) % 1.0
+        local cx = srcX + 16 + phase * 14
+        local alpha = (1 - phase) * (0.25 + hoverGlow * 0.3)
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], alpha)
+        love.graphics.setLineWidth(1.5)
+        love.graphics.line(cx, srcY - 4, cx + 3, srcY, cx, srcY + 4)
+    end
+
+    -- Targeting line and crosshair when mouse is in reactor
+    if mouseInReactor then
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.1 + pulse * 0.05)
+        love.graphics.setLineWidth(1)
+        love.graphics.line(srcX, srcY, mx, my)
+
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.2 + pulse * 0.1)
+        love.graphics.circle("line", mx, my, 8)
+        love.graphics.line(mx - 13, my, mx - 5, my)
+        love.graphics.line(mx + 5, my, mx + 13, my)
+        love.graphics.line(mx, my - 13, mx, my - 5)
+        love.graphics.line(mx, my + 5, mx, my + 13)
+    end
+
+    love.graphics.setLineWidth(1)
 end
 
 function drawControlRods()
@@ -592,9 +765,8 @@ end
 function drawNeutrons()
     for _, n in ipairs(neutrons) do
         if n.alive then
-            -- Speed-based color
-            local speed = math.sqrt(n.vx * n.vx + n.vy * n.vy)
-            local t = clamp(speed / (NEUTRON_SPEED * 1.5), 0, 1)
+            -- Energy-based color (fast=orange/red, thermal=yellow/gold)
+            local t = clamp((n.energy or 2.0) / 2.0, 0, 1)
             local nr = lerp(COLOR_NEUTRON[1], COLOR_NEUTRON_FAST[1], t)
             local ng = lerp(COLOR_NEUTRON[2], COLOR_NEUTRON_FAST[2], t)
             local nb = lerp(COLOR_NEUTRON[3], COLOR_NEUTRON_FAST[3], t)
@@ -685,16 +857,14 @@ function drawSidebar()
     love.graphics.printf("REACTOR CONTROL PANEL", pad, y, SIDEBAR_W - pad * 2, "center")
     y = y + 30
 
-    -- Divider
-    love.graphics.setColor(0.2, 0.22, 0.28)
-    love.graphics.line(pad, y, SIDEBAR_W - pad, y)
+    drawDivider(y, pad)
     y = y + 15
 
     -- Stats
     love.graphics.setFont(fontMed)
 
     -- Energy
-    drawStatLabel("ENERGY RELEASED", y, pad)
+    drawStatLabel("ENERGY RELEASED", y, pad, {1, 0.85, 0.2})
     y = y + 18
     love.graphics.setColor(1, 0.85, 0.2)
     love.graphics.setFont(fontLarge)
@@ -702,16 +872,16 @@ function drawSidebar()
     y = y + 32
 
     -- Temperature
-    drawStatLabel("CORE TEMPERATURE", y, pad)
+    drawStatLabel("CORE TEMPERATURE", y, pad, {1, 0.4, 0.3})
     y = y + 18
     local tempColor = reactorTemp > 300 and COLOR_DANGER or (reactorTemp > 150 and {1, 0.7, 0.2} or COLOR_TEXT)
     love.graphics.setColor(tempColor)
     love.graphics.setFont(fontLarge)
-    love.graphics.printf(string.format("%.0f C", tempDisplay.value), pad, y, SIDEBAR_W - pad * 2, "center")
+    love.graphics.printf(string.format("%.0f °C", tempDisplay.value), pad, y, SIDEBAR_W - pad * 2, "center")
     y = y + 32
 
     -- Fission count
-    drawStatLabel("FISSION EVENTS", y, pad)
+    drawStatLabel("FISSION EVENTS", y, pad, COLOR_URANIUM)
     y = y + 18
     love.graphics.setColor(COLOR_URANIUM)
     love.graphics.setFont(fontLarge)
@@ -721,7 +891,7 @@ function drawSidebar()
     -- Active neutrons
     local activeNeutrons = 0
     for _, n in ipairs(neutrons) do if n.alive then activeNeutrons = activeNeutrons + 1 end end
-    drawStatLabel("ACTIVE NEUTRONS", y, pad)
+    drawStatLabel("ACTIVE NEUTRONS", y, pad, COLOR_NEUTRON)
     y = y + 18
     love.graphics.setColor(COLOR_NEUTRON)
     love.graphics.setFont(fontLarge)
@@ -731,20 +901,18 @@ function drawSidebar()
     -- Remaining atoms
     local aliveAtoms = 0
     for _, a in ipairs(atoms) do if a.alive then aliveAtoms = aliveAtoms + 1 end end
-    drawStatLabel("U-235 REMAINING", y, pad)
+    drawStatLabel("U-235 REMAINING", y, pad, COLOR_URANIUM)
     y = y + 18
     love.graphics.setColor(COLOR_URANIUM)
     love.graphics.setFont(fontLarge)
     love.graphics.printf(tostring(aliveAtoms) .. " / " .. tostring(#atoms), pad, y, SIDEBAR_W - pad * 2, "center")
     y = y + 35
 
-    -- Divider
-    love.graphics.setColor(0.2, 0.22, 0.28)
-    love.graphics.line(pad, y, SIDEBAR_W - pad, y)
+    drawDivider(y, pad)
     y = y + 15
 
     -- Control rods slider visual
-    drawStatLabel("CONTROL RODS", y, pad)
+    drawStatLabel("CONTROL RODS", y, pad, {0.5, 0.6, 0.7})
     y = y + 20
     local barX = pad + 10
     local barW = SIDEBAR_W - pad * 2 - 20
@@ -764,39 +932,50 @@ function drawSidebar()
     y = y + 30
 
     -- Speed
-    drawStatLabel("SIM SPEED", y, pad)
+    drawStatLabel("SIM SPEED", y, pad, COLOR_ACCENT)
     y = y + 18
     love.graphics.setColor(COLOR_TEXT)
     love.graphics.setFont(fontMed)
     love.graphics.printf(string.format("%.1fx", simSpeed), pad, y, SIDEBAR_W - pad * 2, "center")
     y = y + 30
 
-    -- Divider
-    love.graphics.setColor(0.2, 0.22, 0.28)
-    love.graphics.line(pad, y, SIDEBAR_W - pad, y)
+    drawDivider(y, pad)
     y = y + 12
 
     -- Controls help
     love.graphics.setFont(fontSmall)
-    love.graphics.setColor(0.45, 0.5, 0.6)
     local controls = {
-        "CLICK  Fire neutron",
-        "C      Toggle ctrl rods",
-        "UP/DN  Adjust rods",
-        "+/-    Sim speed",
-        "SPACE  Pause",
-        "R      Reset reactor",
+        { key = "CLICK", desc = "Fire neutron" },
+        { key = "C",     desc = "Toggle ctrl rods" },
+        { key = "UP/DN", desc = "Adjust rods" },
+        { key = "+/-",   desc = "Sim speed" },
+        { key = "SPACE", desc = "Pause" },
+        { key = "R",     desc = "Reset reactor" },
+        { key = "A",     desc = "Add fuel (U-235)" },
     }
-    for _, line in ipairs(controls) do
-        love.graphics.printf(line, pad, y, SIDEBAR_W - pad * 2, "left")
-        y = y + 18
+    local cardH = #controls * 20 + 10
+    love.graphics.setColor(0.055, 0.065, 0.085, 0.9)
+    love.graphics.rectangle("fill", pad, y - 2, SIDEBAR_W - pad * 2, cardH, 6, 6)
+    love.graphics.setColor(0.13, 0.15, 0.2, 0.5)
+    love.graphics.rectangle("line", pad, y - 2, SIDEBAR_W - pad * 2, cardH, 6, 6)
+    y = y + 4
+    for _, ctrl in ipairs(controls) do
+        local keyW = fontSmall:getWidth(ctrl.key) + 10
+        local keyX = pad + 10
+        love.graphics.setColor(0.1, 0.12, 0.16, 1)
+        love.graphics.rectangle("fill", keyX, y, keyW, 16, 3, 3)
+        love.graphics.setColor(0.2, 0.23, 0.3, 1)
+        love.graphics.rectangle("line", keyX, y, keyW, 16, 3, 3)
+        love.graphics.setColor(0.6, 0.65, 0.75)
+        love.graphics.print(ctrl.key, keyX + 5, y + 1)
+        love.graphics.setColor(0.45, 0.5, 0.6)
+        love.graphics.print(ctrl.desc, keyX + keyW + 8, y + 1)
+        y = y + 20
     end
 
     y = y + 8
 
-    -- Divider
-    love.graphics.setColor(0.2, 0.22, 0.28)
-    love.graphics.line(pad, y, SIDEBAR_W - pad, y)
+    drawDivider(y, pad)
     y = y + 12
 
     -- Reactor status
@@ -821,7 +1000,7 @@ function drawSidebar()
         statusColor = {0.4, 0.5, 0.6}
     end
 
-    drawStatLabel("REACTOR STATUS", y, pad)
+    drawStatLabel("REACTOR STATUS", y, pad, statusColor)
     y = y + 18
     love.graphics.setFont(fontMed)
     love.graphics.setColor(statusColor)
@@ -831,17 +1010,46 @@ function drawSidebar()
     end
     y = y + 28
 
-    -- FPS
+    -- Footer: "made with <3 by vinny" with colored parts
     love.graphics.setFont(fontSmall)
-    love.graphics.setColor(0.3, 0.33, 0.4)
+    local part1 = "made with "
+    local part2 = "<3"
+    local part3 = " by "
+    local part4 = "vinny"
+    local w1 = fontSmall:getWidth(part1)
+    local w2 = fontSmall:getWidth(part2)
+    local w3 = fontSmall:getWidth(part3)
+    local w4 = fontSmall:getWidth(part4)
+    local totalTextW = w1 + w2 + w3 + w4
+    local startX = (SIDEBAR_W - totalTextW) / 2
+    local footerY = H - 30
     love.graphics.setColor(0.45, 0.5, 0.6)
-    love.graphics.printf("made with <3 by vinny", pad, H - 42, SIDEBAR_W - pad * 2, "center")
-    love.graphics.setColor(0.3, 0.33, 0.4)
-    love.graphics.printf("FPS: " .. tostring(love.timer.getFPS()), pad, H - 24, SIDEBAR_W - pad * 2, "center")
+    love.graphics.print(part1, startX, footerY)
+    love.graphics.setColor(1.0, 0.35, 0.45)
+    love.graphics.print(part2, startX + w1, footerY)
+    love.graphics.setColor(0.45, 0.5, 0.6)
+    love.graphics.print(part3, startX + w1 + w2, footerY)
+    love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 1)
+    love.graphics.print(part4, startX + w1 + w2 + w3, footerY)
 end
 
-function drawStatLabel(text, y, pad)
+function drawDivider(y, pad)
+    local midX = SIDEBAR_W / 2
+    love.graphics.setColor(0.18, 0.2, 0.26)
+    love.graphics.line(pad + 8, y, midX - 6, y)
+    love.graphics.line(midX + 6, y, SIDEBAR_W - pad - 8, y)
+    love.graphics.setColor(0.25, 0.3, 0.4)
+    love.graphics.polygon("fill", midX, y - 2.5, midX + 2.5, y, midX, y + 2.5, midX - 2.5, y)
+end
+
+function drawStatLabel(text, y, pad, dotColor)
     love.graphics.setFont(fontSmall)
+    if dotColor then
+        love.graphics.setColor(dotColor[1], dotColor[2], dotColor[3], 0.3)
+        love.graphics.circle("fill", pad + 6, y + 7, 5)
+        love.graphics.setColor(dotColor)
+        love.graphics.circle("fill", pad + 6, y + 7, 2.5)
+    end
     love.graphics.setColor(0.4, 0.45, 0.55)
     love.graphics.printf(text, pad, y, SIDEBAR_W - pad * 2, "center")
 end
@@ -893,15 +1101,17 @@ function love.keypressed(key)
         end
         flux.to(controlRodObj, 0.8, { value = controlRodTarget }):ease("cubicout")
     elseif key == "up" then
-        controlRodTarget = clamp(controlRodTarget + 0.1, 0, 1)
+        controlRodTarget = clamp(controlRodTarget - 0.1, 0, 1)
         flux.to(controlRodObj, 0.3, { value = controlRodTarget }):ease("quadout")
     elseif key == "down" then
-        controlRodTarget = clamp(controlRodTarget - 0.1, 0, 1)
+        controlRodTarget = clamp(controlRodTarget + 0.1, 0, 1)
         flux.to(controlRodObj, 0.3, { value = controlRodTarget }):ease("quadout")
     elseif key == "=" or key == "kp+" then
         simSpeed = clamp(simSpeed + 0.25, 0.25, 5.0)
     elseif key == "-" or key == "kp-" then
         simSpeed = clamp(simSpeed - 0.25, 0.25, 5.0)
+    elseif key == "a" then
+        addAtoms(5)
     end
 end
 
@@ -910,6 +1120,7 @@ function resetReactor()
     fragments = {}
     flashes = {}
     trails = {}
+    delayedNeutrons = {}
     totalEnergy = 0
     fissionCount = 0
     neutronsFired = 0
@@ -923,4 +1134,30 @@ function resetReactor()
     controlRodTarget = 0
     flux.to(controlRodObj, 0.5, { value = 0 }):ease("quadout")
     spawnAtoms(30)
+end
+
+function love.resize(w, h)
+    local oldRX, oldRY, oldRW, oldRH = REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H
+    updateLayout()
+    -- Rescale all entity positions to new reactor bounds
+    for _, atom in ipairs(atoms) do
+        atom.x = REACTOR_X + (atom.x - oldRX) / oldRW * REACTOR_W
+        atom.y = REACTOR_Y + (atom.y - oldRY) / oldRH * REACTOR_H
+    end
+    for _, n in ipairs(neutrons) do
+        n.x = REACTOR_X + (n.x - oldRX) / oldRW * REACTOR_W
+        n.y = REACTOR_Y + (n.y - oldRY) / oldRH * REACTOR_H
+    end
+    for _, f in ipairs(fragments) do
+        f.x = REACTOR_X + (f.x - oldRX) / oldRW * REACTOR_W
+        f.y = REACTOR_Y + (f.y - oldRY) / oldRH * REACTOR_H
+    end
+    for _, tr in ipairs(trails) do
+        tr.x = REACTOR_X + (tr.x - oldRX) / oldRW * REACTOR_W
+        tr.y = REACTOR_Y + (tr.y - oldRY) / oldRH * REACTOR_H
+    end
+    for _, fl in ipairs(flashes) do
+        fl.x = REACTOR_X + (fl.x - oldRX) / oldRW * REACTOR_W
+        fl.y = REACTOR_Y + (fl.y - oldRY) / oldRH * REACTOR_H
+    end
 end

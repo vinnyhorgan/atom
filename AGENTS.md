@@ -38,18 +38,22 @@ entities updated in `love.update(dt)` and drawn in `love.draw()`.
 |-------------------|-------------------------------------------------------------------|
 | **Atoms**         | U-235 nuclei placed randomly in the reactor vessel                |
 | **Neutrons**      | Projectiles that trigger fission on contact with atoms            |
-| **Fission**       | Splits an atom, spawns 2–3 new neutrons + fragments + particles   |
+| **Fission**       | Probabilistic: cross-section depends on neutron energy & temperature |
 | **Control Rods**  | 5 vertical rods that absorb neutrons when inserted                |
-| **Temperature**   | Rises with fission events; triggers meltdown above threshold      |
+| **Neutron Energy**| Fast (~2 MeV) from fission, thermalizes via moderator over time   |
+| **Temperature**   | Rises with fission; Doppler broadening reduces reactivity (neg. coeff) |
 | **Meltdown**      | Game-over state when reactor temperature goes critical             |
 
 ### Simulation Loop
 
-1. Neutrons move based on velocity and `simSpeed`
-2. Collision detection checks neutron ↔ atom and neutron ↔ control rod
-3. Fission events spawn new neutrons, fragments, flashes, and particles
-4. Temperature accumulates from fission energy; decays over time
-5. Meltdown triggers if temperature exceeds the critical threshold
+1. Neutrons move at speed scaled by √(energy) — fast neutrons zoom, thermal crawl
+2. Neutron energy decays exponentially (moderator simulation, rate = 6/s)
+3. Collision checks: interaction probability depends on neutron energy (σ_total)
+4. Interaction outcomes: fission (~84% thermal), elastic scatter, or radiative capture
+5. Doppler broadening: higher temperature reduces effective fission cross-section
+6. Delayed neutrons (β_eff ≈ 0.0065): ~0.65% of neutrons spawn after 0.2–12s delay
+7. Temperature rises from fission; exponential cooling (Newton's law)
+8. Meltdown triggers if temperature exceeds the critical threshold
 
 ### Rendering Layers (draw order)
 
@@ -74,6 +78,7 @@ entities updated in `love.update(dt)` and drawn in `love.draw()`.
 | **C**              | Toggle control rods (in/out)        |
 | **Up / Down**      | Adjust control rod insertion ±10%   |
 | **+ / -**          | Adjust simulation speed (0.25–5×)   |
+| **A**              | Add 5 more U-235 atoms              |
 
 ## Coding Conventions
 

@@ -1,0 +1,19 @@
+name: Build .love file
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build .love file
+        run: zip -9 -r atom.love main.lua conf.lua flux.lua
+
+      - name: Upload .love artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atom.love
+          path: atom.love
