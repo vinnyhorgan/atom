@@ -683,6 +683,15 @@ function love.draw()
 
     drawSidebar()
 
+    -- Full-screen detonation flash (covers entire window including sidebar)
+    if currentMode == "bomb" then
+        local fa = bombSim.getFlashAlpha()
+        if fa and fa > 0 then
+            love.graphics.setColor(1, 1, 0.95, fa * 0.8)
+            love.graphics.rectangle("fill", 0, 0, love.graphics.getDimensions())
+        end
+    end
+
     if currentMode == "reactor" and not atom3dViewer.active then
         if paused then
             drawPauseOverlay()
@@ -837,7 +846,7 @@ function drawAtoms()
             -- Label
             love.graphics.setColor(0.8, 1, 0.85, 0.6)
             love.graphics.setFont(fontSmall)
-            love.graphics.printf("U-235", atom.x - 20, atom.y + r + 4, 40, "center")
+            love.graphics.printf("U-235", atom.x - 25, atom.y + r + 4, 50, "center")
 
             -- Scatter glow ring (flashes when neutron deflects off this atom)
             if atom.glow and atom.glow > 0 then
@@ -1296,6 +1305,9 @@ function love.mousepressed(x, y, button)
             return
         end
     end
+    if currentMode == "bomb" then
+        if bombSim.mousepressed(x, y, button) then return end
+    end
     if currentMode == "reactor" and button == 1 and inReactor(x, y) then
         fireNeutron(x, y)
     end
@@ -1341,10 +1353,12 @@ function love.keypressed(key)
 end
 
 function love.mousereleased(x, y, button)
+    if currentMode == "bomb" then bombSim.mousereleased(x, y, button) end
     atom3dViewer.mousereleased(x, y, button)
 end
 
 function love.mousemoved(x, y, dx, dy)
+    if currentMode == "bomb" then bombSim.mousemoved(x, y, dx, dy) end
     atom3dViewer.mousemoved(x, y, dx, dy)
 end
 

@@ -47,6 +47,16 @@ local COLOR_TEXT        = {0.85, 0.88, 0.92}
 local COLOR_ACCENT      = {0.3, 0.7, 1.0}
 local COLOR_DANGER      = {1.0, 0.3, 0.25}
 
+-- Adjustable weapon parameters (persist across resets)
+local sliders = {
+    { id = "fuel_mass",   label = "URANIUM FUEL",       unit = " atoms", min = 20,  max = 120, value = 60,  default = 60,  fmt = "%.0f" },
+    { id = "enrichment",  label = "FUEL PURITY",        unit = "%",      min = 50,  max = 95,  value = 85,  default = 85,  fmt = "%.0f" },
+    { id = "tamper",      label = "NEUTRON REFLECTOR",  unit = "x",      min = 1.0, max = 2.5, value = 1.5, default = 1.5, fmt = "%.1f" },
+    { id = "initiators",  label = "DETONATORS",         unit = "",       min = 1,   max = 8,   value = 3,   default = 3,   fmt = "%.0f" },
+}
+local draggingSlider = nil
+local sliderRects = {}
+
 ---------------------------------------------------------------------
 -- State
 ---------------------------------------------------------------------
@@ -94,6 +104,9 @@ local function resetState()
 
         -- Yield
         yieldKt = 0,          -- kilotons TNT equivalent
+        normalizedYield = 0,  -- 0..1 fraction of theoretical max
+        efficiency = 0,       -- percentage of fuel fissioned
+        flashAlpha = 0,       -- initial detonation flash
 
         -- Camera shake
         shakeAmount = 0,
@@ -119,6 +132,33 @@ end
 local function clamp(v, lo, hi) return math.max(lo, math.min(hi, v)) end
 local function randomAngle() return love.math.random() * TWO_PI end
 local function lerp(a, b, t) return a + (b - a) * t end
+
+local function getSliderValue(id)
+    for _, s in ipairs(sliders) do
+        if s.id == id then return s.value end
+    end
+end
+
+local function setSliderFromMouse(idx, mouseX)
+    local rect = sliderRects[idx]
+    if not rect then return end
+    local s = sliders[idx]
+    local t = clamp((mouseX - rect.barX) / rect.barW, 0, 1)
+    local raw = s.min + t * (s.max - s.min)
+    if s.fmt == "%.0f" then
+        raw = math.floor(raw + 0.5)
+    else
+        raw = math.floor(raw * 10 + 0.5) / 10
+    end
+    s.value = clamp(raw, s.min, s.max)
+end
+
+local function respawnIfNeeded()
+    if state.phase == PHASE_IDLE or state.phase == PHASE_ARMED then
+        state.atoms = {}
+        state.atomsOriginal = {}
+    end
+end
 
 ---------------------------------------------------------------------
 -- Particle systems
@@ -195,7 +235,8 @@ local function spawnPitAtoms(cx, cy, radius)
 
     -- Fill circle with atoms using rejection sampling for natural look
     local minDist = ATOM_RADIUS * 2.5
-    for i = 1, NUM_PIT_ATOMS do
+    local numAtoms = math.floor(getSliderValue("fuel_mass"))
+    for i = 1, numAtoms do
         local placed = false
         local attempts = 0
         while not placed and attempts < 500 do
@@ -254,7 +295,7 @@ local function triggerBombFission(atom, neutron)
 
     -- Yield: 1 kiloton ≈ 1.45×10^23 fissions
     -- For visualization, scale dramatically so the counter is meaningful
-    state.yieldKt = state.fissionCount * 0.35
+    state.yieldKt = state.fissionCount * 0.5
 
     -- Camera shake
     state.shakeAmount = math.min(state.shakeAmount + 4, 25)
@@ -436,7 +477,8 @@ function updateImplosion(dt)
         state.phase = PHASE_CHAIN
         state.chainStartTime = love.timer.getTime()
         -- Fire initiator neutron from center
-        for i = 1, 3 do
+        local numInit = math.floor(getSliderValue("initiators"))
+        for i = 1, numInit do
             local a = randomAngle()
             local spd = NEUTRON_SPEED
             table.insert(state.neutrons, {
@@ -484,7 +526,7 @@ function updateChainReaction(dt)
             -- Bounce off compressed pit boundary (neutron reflector)
             local pitR = state.viewRadius * PIT_RADIUS_FRAC / state.compressionRatio
             local dFromCenter = dist(n.x, n.y, state.cx, state.cy)
-            if dFromCenter > pitR * 1.5 then
+            if dFromCenter > pitR * getSliderValue("tamper") then
                 -- Reflect back toward center (tamper effect)
                 local angle = math.atan2(state.cy - n.y, state.cx - n.x)
                 angle = angle + (love.math.random() - 0.5) * 0.5
@@ -500,7 +542,7 @@ function updateChainReaction(dt)
                         local d = dist(n.x, n.y, atom.x, atom.y)
                         if d < CAPTURE_RADIUS * (1 / state.compressionRatio) then
                             -- In a supercritical compressed mass, nearly every collision fissions
-                            local fissionProb = 0.85
+                            local fissionProb = getSliderValue("enrichment") / 100
                             if love.math.random() < fissionProb then
                                 n.alive = false
                                 triggerBombFission(atom, n)
@@ -541,22 +583,33 @@ function updateChainReaction(dt)
         if a.alive then aliveAtoms = aliveAtoms + 1 end
     end
 
-    if aliveAtoms == 0 or state.fissionCount > NUM_PIT_ATOMS * 0.8 then
+    if aliveAtoms == 0 or state.fissionCount > getSliderValue("fuel_mass") * 0.8 then
         state.phase = PHASE_EXPLOSION
         state.explosionT = 0
         state.fireballRadius = 10
         state.fireballAlpha = 1.0
         state.shockwaveRadius = 5
         state.shockwaveAlpha = 1.0
-        -- Big particle burst
+
+        -- Calculate yield metrics for scaling
+        local fuelMass = getSliderValue("fuel_mass")
+        state.efficiency = (state.fissionCount / fuelMass) * 100
+        state.normalizedYield = clamp(state.yieldKt / 30, 0, 1)
+        state.flashAlpha = 0.6 + 0.4 * state.normalizedYield
+        local yf = state.normalizedYield
+
+        -- Scale particle burst by yield
         particleSystems.debris:setPosition(state.cx, state.cy)
-        particleSystems.debris:emit(200)
+        particleSystems.debris:emit(math.floor(80 + 320 * yf))
         particleSystems.glow:setPosition(state.cx, state.cy)
-        particleSystems.glow:emit(100)
-        -- Big shake
-        state.shakeAmount = 25
-        state.shakeObj.value = 25
-        flux.to(state.shakeObj, 3.0, { value = 0 }):ease("expoout")
+        particleSystems.glow:emit(math.floor(40 + 160 * yf))
+
+        -- Scale screen shake by yield
+        local shakeIntensity = 15 + 35 * yf
+        local shakeDuration = 2.0 + 4.0 * yf
+        state.shakeAmount = shakeIntensity
+        state.shakeObj.value = shakeIntensity
+        flux.to(state.shakeObj, shakeDuration, { value = 0 }):ease("expoout")
             :onupdate(function() state.shakeAmount = state.shakeObj.value end)
     end
 end
@@ -566,39 +619,46 @@ end
 ---------------------------------------------------------------------
 function updateExplosion(dt)
     state.explosionT = state.explosionT + dt * 0.4
+    local yf = state.normalizedYield
 
-    -- Expanding fireball
-    local maxFireball = state.viewRadius * 1.8
+    -- Expanding fireball (scaled by yield: fizzle is tiny, big yield is massive)
+    local maxFireball = state.viewRadius * (0.5 + 1.8 * yf)
     state.fireballRadius = lerp(10, maxFireball, math.min(1, state.explosionT * 1.5))
-    state.fireballAlpha = math.max(0, 1 - state.explosionT * 0.5)
+    state.fireballAlpha = math.max(0, 1 - state.explosionT * (0.6 - 0.2 * yf))
 
-    -- Shockwave ring
-    local maxShock = state.viewRadius * 2.5
+    -- Shockwave ring (scaled by yield)
+    local maxShock = state.viewRadius * (0.8 + 2.5 * yf)
     state.shockwaveRadius = lerp(5, maxShock, math.min(1, state.explosionT * 2))
-    state.shockwaveAlpha = math.max(0, 1 - state.explosionT * 0.8)
+    state.shockwaveAlpha = math.max(0, 1 - state.explosionT * (1.0 - 0.3 * yf))
 
-    -- Push remaining neutrons outward
+    -- Flash fade
+    state.flashAlpha = math.max(0, state.flashAlpha - dt * (1.0 - 0.4 * yf))
+
+    -- Push remaining neutrons outward (force scaled by yield)
+    local pushForce = 200 + 500 * yf
     for _, n in ipairs(state.neutrons) do
         if n.alive then
             local dx = n.x - state.cx
             local dy = n.y - state.cy
             local d = math.sqrt(dx*dx + dy*dy) + 0.01
-            n.vx = n.vx + dx/d * 500 * dt
-            n.vy = n.vy + dy/d * 500 * dt
+            n.vx = n.vx + dx/d * pushForce * dt
+            n.vy = n.vy + dy/d * pushForce * dt
             n.x = n.x + n.vx * dt
             n.y = n.y + n.vy * dt
         end
     end
 
-    -- Trail fade
-    if love.math.random() < 0.5 then
+    -- Debris emission during explosion (scaled by yield)
+    local debrisRate = 0.3 + 0.7 * yf
+    if love.math.random() < debrisRate then
         local a = randomAngle()
         local r = state.fireballRadius * love.math.random()
         particleSystems.debris:setPosition(state.cx + math.cos(a)*r, state.cy + math.sin(a)*r)
-        particleSystems.debris:emit(1)
+        particleSystems.debris:emit(math.floor(1 + 3 * yf))
     end
 
-    if state.explosionT > 3.0 then
+    -- Longer explosion for bigger yields
+    if state.explosionT > (2.0 + 2.0 * yf) then
         state.phase = PHASE_AFTERMATH
     end
 end
@@ -611,16 +671,14 @@ function bomb.draw(rx, ry, rw, rh)
     local cy = ry + rh / 2
     local vr = math.min(rw, rh) * 0.45
 
-    -- Clip to reactor rect
-    love.graphics.setScissor(rx, ry, rw, rh)
-
     if state.phase == PHASE_EXPLOSION or state.phase == PHASE_AFTERMATH then
+        -- No scissor — let the explosion break out of the reactor area
         drawExplosion(cx, cy, vr, rx, ry, rw, rh)
     else
+        love.graphics.setScissor(rx, ry, rw, rh)
         drawBombDevice(cx, cy, vr, rx, ry, rw, rh)
+        love.graphics.setScissor()
     end
-
-    love.graphics.setScissor()
 end
 
 function drawBombDevice(cx, cy, vr, rx, ry, rw, rh)
@@ -770,11 +828,19 @@ function drawBombDevice(cx, cy, vr, rx, ry, rw, rh)
 end
 
 function drawExplosion(cx, cy, vr, rx, ry, rw, rh)
+    local yf = state.normalizedYield
+
+    -- Full-area detonation flash
+    if state.flashAlpha > 0 then
+        love.graphics.setColor(1, 1, 0.95, state.flashAlpha)
+        love.graphics.rectangle("fill", rx, ry, rw, rh)
+    end
+
     -- Fireball
     if state.fireballAlpha > 0 then
-        -- Outer glow
-        love.graphics.setColor(1, 0.3, 0.05, state.fireballAlpha * 0.15)
-        love.graphics.circle("fill", cx, cy, state.fireballRadius * 1.3)
+        -- Outer glow (bigger and brighter for higher yields)
+        love.graphics.setColor(1, 0.3, 0.05, state.fireballAlpha * (0.1 + 0.15 * yf))
+        love.graphics.circle("fill", cx, cy, state.fireballRadius * (1.2 + 0.3 * yf))
 
         -- Inner fireball gradient
         local layers = 5
@@ -788,20 +854,33 @@ function drawExplosion(cx, cy, vr, rx, ry, rw, rh)
             love.graphics.circle("fill", cx, cy, r)
         end
 
-        -- Bright white core
-        if state.explosionT < 1.5 then
-            local coreA = math.max(0, 1 - state.explosionT)
+        -- Bright white core (lingers longer for bigger yields)
+        if state.explosionT < (1.0 + 1.0 * yf) then
+            local coreA = math.max(0, 1 - state.explosionT / (0.8 + 0.4 * yf))
             love.graphics.setColor(1, 1, 1, coreA)
-            love.graphics.circle("fill", cx, cy, state.fireballRadius * 0.3)
+            love.graphics.circle("fill", cx, cy, state.fireballRadius * (0.25 + 0.2 * yf))
         end
     end
 
-    -- Shockwave ring
+    -- Shockwave ring (thickness and count scaled by yield)
     if state.shockwaveAlpha > 0.02 then
-        love.graphics.setColor(COLOR_SHOCKWAVE[1], COLOR_SHOCKWAVE[2], COLOR_SHOCKWAVE[3], state.shockwaveAlpha * 0.5)
-        love.graphics.setLineWidth(3 + state.shockwaveRadius * 0.02)
+        local lw = (3 + state.shockwaveRadius * 0.03) * (0.7 + 0.8 * yf)
+        love.graphics.setColor(COLOR_SHOCKWAVE[1], COLOR_SHOCKWAVE[2], COLOR_SHOCKWAVE[3], state.shockwaveAlpha * 0.6)
+        love.graphics.setLineWidth(lw)
         love.graphics.circle("line", cx, cy, state.shockwaveRadius)
+        -- Second trailing shockwave for bigger yields
+        if yf > 0.3 then
+            love.graphics.setColor(COLOR_SHOCKWAVE[1], COLOR_SHOCKWAVE[2], COLOR_SHOCKWAVE[3], state.shockwaveAlpha * 0.25)
+            love.graphics.setLineWidth(lw * 0.5)
+            love.graphics.circle("line", cx, cy, state.shockwaveRadius * 0.8)
+        end
         love.graphics.setLineWidth(1)
+    end
+
+    -- Heat distortion glow
+    if state.fireballAlpha > 0.1 then
+        love.graphics.setColor(1, 0.5, 0.1, state.fireballAlpha * 0.08 * yf)
+        love.graphics.rectangle("fill", rx, ry, rw, rh)
     end
 
     -- Particles
@@ -818,21 +897,51 @@ function drawExplosion(cx, cy, vr, rx, ry, rw, rh)
         end
     end
 
-    -- Aftermath text
+    -- Aftermath overlay
     if state.phase == PHASE_AFTERMATH then
-        love.graphics.setColor(0, 0, 0, 0.6)
-        love.graphics.rectangle("fill", rx + 20, cy - 55, rw - 40, 100, 8, 8)
+        -- Yield rating
+        local rating, ratingColor
+        if state.yieldKt < 1 then
+            rating = "DUD"
+            ratingColor = {0.5, 0.5, 0.5}
+        elseif state.yieldKt < 5 then
+            rating = "FIZZLE"
+            ratingColor = {0.8, 0.7, 0.3}
+        elseif state.yieldKt < 15 then
+            rating = "TACTICAL"
+            ratingColor = {1.0, 0.7, 0.2}
+        elseif state.yieldKt < 25 then
+            rating = "STRATEGIC"
+            ratingColor = {1.0, 0.5, 0.15}
+        elseif state.yieldKt < 40 then
+            rating = "DEVASTATING"
+            ratingColor = {1.0, 0.3, 0.1}
+        else
+            rating = "CITY KILLER"
+            ratingColor = {1.0, 0.15, 0.1}
+        end
+
+        love.graphics.setColor(0, 0, 0, 0.7)
+        love.graphics.rectangle("fill", rx + 20, cy - 80, rw - 40, 160, 8, 8)
 
         love.graphics.setFont(fonts.huge)
-        love.graphics.setColor(1, 0.9, 0.5, 0.95)
-        love.graphics.printf("DETONATION COMPLETE", rx, cy - 45, rw, "center")
+        love.graphics.setColor(ratingColor[1], ratingColor[2], ratingColor[3], 0.95)
+        love.graphics.printf(rating, rx, cy - 70, rw, "center")
+
+        love.graphics.setFont(fonts.large)
+        love.graphics.setColor(1, 0.9, 0.5, 0.9)
+        love.graphics.printf(string.format("%.1f kilotons", state.yieldKt), rx, cy - 30, rw, "center")
 
         love.graphics.setFont(fonts.med)
-        love.graphics.setColor(0.8, 0.85, 0.9)
+        love.graphics.setColor(0.7, 0.75, 0.85)
         love.graphics.printf(
-            string.format("Yield: %.1f kt  |  %d fissions  |  Press R to reset", state.yieldKt, state.fissionCount),
-            rx, cy + 15, rw, "center"
+            string.format("%d fissions  |  %.0f%% efficiency", state.fissionCount, state.efficiency),
+            rx, cy + 10, rw, "center"
         )
+
+        love.graphics.setFont(fonts.small)
+        love.graphics.setColor(0.5, 0.55, 0.65)
+        love.graphics.printf("Press R to reset  |  D to reset design", rx, cy + 45, rw, "center")
     end
 end
 
@@ -888,7 +997,12 @@ function bomb.drawSidebar(pad, startY, sidebarW, H, drawDivider, drawStatLabel)
     love.graphics.setColor(COLOR_DANGER)
     love.graphics.setFont(fonts.large)
     love.graphics.printf(string.format("%.1f kt", state.yieldKt), pad, y, sidebarW - pad * 2, "center")
-    y = y + 32
+    y = y + 22
+    love.graphics.setFont(fonts.small)
+    love.graphics.setColor(0.45, 0.5, 0.6)
+    local maxYield = getSliderValue("fuel_mass") * 0.8 * 0.5
+    love.graphics.printf(string.format("theoretical max: %.0f kt", maxYield), pad, y, sidebarW - pad * 2, "center")
+    y = y + 20
 
     -- Fission count
     drawStatLabel("FISSION EVENTS", y, pad, COLOR_PIT)
@@ -896,7 +1010,16 @@ function bomb.drawSidebar(pad, startY, sidebarW, H, drawDivider, drawStatLabel)
     love.graphics.setColor(COLOR_PIT)
     love.graphics.setFont(fonts.large)
     love.graphics.printf(tostring(state.fissionCount), pad, y, sidebarW - pad * 2, "center")
-    y = y + 32
+    y = y + 22
+    if state.fissionCount > 0 then
+        love.graphics.setFont(fonts.small)
+        local eff = (state.fissionCount / getSliderValue("fuel_mass")) * 100
+        love.graphics.setColor(0.45, 0.5, 0.6)
+        love.graphics.printf(string.format("%.0f%% of fuel fissioned", eff), pad, y, sidebarW - pad * 2, "center")
+        y = y + 18
+    else
+        y = y + 10
+    end
 
     -- Active neutrons
     local activeN = 0
@@ -923,12 +1046,56 @@ function bomb.drawSidebar(pad, startY, sidebarW, H, drawDivider, drawStatLabel)
     drawDivider(y, pad)
     y = y + 15
 
+    -- Weapon design sliders
+    drawStatLabel("WEAPON DESIGN", y, pad, COLOR_ACCENT)
+    y = y + 18
+    local editable = (state.phase == PHASE_IDLE or state.phase == PHASE_ARMED)
+    local barMargin = 5
+    local barW = sidebarW - pad * 2 - barMargin * 2
+    local bx = pad + barMargin
+    for idx, s in ipairs(sliders) do
+        love.graphics.setFont(fonts.small)
+        local valStr = string.format(s.fmt, s.value) .. s.unit
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], editable and 0.6 or 0.25)
+        love.graphics.print(s.label, bx, y)
+        love.graphics.setColor(1, 1, 1, editable and 0.75 or 0.25)
+        love.graphics.printf(valStr, bx, y, barW, "right")
+        y = y + 15
+        local barH = 6
+        local barR = 3
+        love.graphics.setColor(0.1, 0.12, 0.16, editable and 0.9 or 0.35)
+        love.graphics.rectangle("fill", bx, y, barW, barH, barR, barR)
+        local t = (s.value - s.min) / (s.max - s.min)
+        local fillW = math.max(barR, t * barW)
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], editable and 0.65 or 0.2)
+        love.graphics.rectangle("fill", bx, y, fillW, barH, barR, barR)
+        local handleR = 5
+        local hx = bx + t * barW
+        local hy = y + barH / 2
+        love.graphics.setColor(1, 1, 1, editable and 0.85 or 0.2)
+        love.graphics.circle("fill", hx, hy, handleR)
+        if editable and draggingSlider == idx then
+            love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.6)
+            love.graphics.setLineWidth(1.5)
+            love.graphics.circle("line", hx, hy, handleR + 1)
+        end
+        sliderRects[idx] = {
+            barX = bx, barY = y, barW = barW, barH = barH, handleR = handleR
+        }
+        y = y + barH + 10
+    end
+    y = y + 2
+
+    drawDivider(y, pad)
+    y = y + 15
+
     -- Controls
     love.graphics.setFont(fonts.small)
     local controls = {
         { key = "SPACE", desc = "Arm weapon" },
         { key = "ENTER", desc = "Detonate" },
         { key = "R",     desc = "Reset" },
+        { key = "D",     desc = "Reset design" },
         { key = "V",     desc = "3D atom view" },
     }
     local cardH = #controls * 20 + 10
@@ -996,6 +1163,14 @@ function bomb.keypressed(key)
         local cx, cy, vr = state.cx, state.cy, state.viewRadius
         resetState()
         -- Re-spawn will happen in update when cx/cy are set
+    elseif key == "d" then
+        if state.phase == PHASE_IDLE or state.phase == PHASE_ARMED then
+            for _, s in ipairs(sliders) do
+                s.value = s.default
+            end
+            state.atoms = {}
+            state.atomsOriginal = {}
+        end
     end
     -- Return true if we handled the key (bomb mode active)
     return true
@@ -1005,8 +1180,51 @@ function bomb.getShakeAmount()
     return state.shakeAmount
 end
 
+function bomb.getFlashAlpha()
+    return state.flashAlpha
+end
+
 function bomb.getPhase()
     return state.phase
+end
+
+function bomb.mousepressed(x, y, button)
+    if button ~= 1 then return false end
+    if state.phase ~= PHASE_IDLE and state.phase ~= PHASE_ARMED then return false end
+    for idx = 1, #sliders do
+        local rect = sliderRects[idx]
+        if rect and x >= rect.barX - rect.handleR and x <= rect.barX + rect.barW + rect.handleR
+            and y >= rect.barY - rect.handleR and y <= rect.barY + rect.barH + rect.handleR then
+            draggingSlider = idx
+            local oldVal = sliders[idx].value
+            setSliderFromMouse(idx, x)
+            if sliders[idx].value ~= oldVal and sliders[idx].id == "fuel_mass" then
+                respawnIfNeeded()
+            end
+            return true
+        end
+    end
+    return false
+end
+
+function bomb.mousemoved(x, y, dx, dy)
+    if draggingSlider then
+        local oldVal = sliders[draggingSlider].value
+        setSliderFromMouse(draggingSlider, x)
+        if sliders[draggingSlider].value ~= oldVal and sliders[draggingSlider].id == "fuel_mass" then
+            respawnIfNeeded()
+        end
+        return true
+    end
+    return false
+end
+
+function bomb.mousereleased(x, y, button)
+    if button == 1 and draggingSlider then
+        draggingSlider = nil
+        return true
+    end
+    return false
 end
 
 return bomb
