@@ -4,6 +4,10 @@
 
 local flux = require "flux"
 local atom3dViewer = require "atom3d"
+local bombSim = require "bomb"
+
+-- Current mode: "reactor" or "bomb"
+local currentMode = "reactor"
 
 ---------------------------------------------------------------------
 -- Constants & tuning
@@ -89,6 +93,7 @@ local tempDisplay   = { value = 0 }
 local reactorTemp   = 0
 local meltdown      = false
 local atom3dBtnRect = nil
+local modeTabRects  = {}    -- {reactor = {x,y,w,h}, bomb = {x,y,w,h}}
 
 -- Particle systems
 local glowPS, sparkPS, flashPS
@@ -134,6 +139,7 @@ function love.load()
     initParticleSystems()
     spawnAtoms(30)
     atom3dViewer.load(fontSmall)
+    bombSim.load(fontSmall, fontMed, fontLarge, fontHuge)
 end
 
 function initParticleSystems()
@@ -407,6 +413,12 @@ end
 function love.update(dt)
     atom3dViewer.update(dt)
 
+    if currentMode == "bomb" then
+        bombSim.update(dt, REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
+        flux.update(dt)
+        return
+    end
+
     if paused then
         flux.update(dt) -- still animate UI
         glowPS:update(dt)
@@ -618,14 +630,18 @@ end
 -- Draw
 ---------------------------------------------------------------------
 function love.draw()
-    local sx = (love.math.random() - 0.5) * shakeAmount * 2
-    local sy = (love.math.random() - 0.5) * shakeAmount * 2
+    local shake = currentMode == "bomb" and bombSim.getShakeAmount() or shakeAmount
+    local sx = (love.math.random() - 0.5) * shake * 2
+    local sy = (love.math.random() - 0.5) * shake * 2
     love.graphics.push()
     love.graphics.translate(sx, sy)
 
     if atom3dViewer.active then
         drawReactor()
         atom3dViewer.draw(REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
+    elseif currentMode == "bomb" then
+        drawReactor()
+        bombSim.draw(REACTOR_X, REACTOR_Y, REACTOR_W, REACTOR_H)
     else
         drawReactor()
         drawControlRods()
@@ -641,7 +657,7 @@ function love.draw()
 
     drawSidebar()
 
-    if not atom3dViewer.active then
+    if currentMode == "reactor" and not atom3dViewer.active then
         if paused then
             drawPauseOverlay()
         end
@@ -889,15 +905,78 @@ function drawSidebar()
     love.graphics.setFont(fontLarge)
     love.graphics.setColor(COLOR_ACCENT)
     love.graphics.printf("ATOM", pad, y, SIDEBAR_W - pad * 2, "center")
-    y = y + 35
+    y = y + 30
+
+    -- Mode tabs
+    local tabW = (SIDEBAR_W - pad * 2 - 8) / 2
+    local tabH = 26
+    local tabX1 = pad
+    local tabX2 = pad + tabW + 8
+
+    modeTabRects.reactor = { x = tabX1, y = y, w = tabW, h = tabH }
+    modeTabRects.bomb    = { x = tabX2, y = y, w = tabW, h = tabH }
+
+    local mx, my = love.mouse.getPosition()
+
+    -- Reactor tab
+    local rHover = mx >= tabX1 and mx <= tabX1 + tabW and my >= y and my <= y + tabH
+    if currentMode == "reactor" then
+        love.graphics.setColor(0.15, 0.25, 0.4, 1)
+    elseif rHover then
+        love.graphics.setColor(0.12, 0.14, 0.2, 1)
+    else
+        love.graphics.setColor(0.08, 0.09, 0.12, 1)
+    end
+    love.graphics.rectangle("fill", tabX1, y, tabW, tabH, 5, 5)
+    if currentMode == "reactor" then
+        love.graphics.setColor(COLOR_ACCENT[1], COLOR_ACCENT[2], COLOR_ACCENT[3], 0.6)
+    else
+        love.graphics.setColor(0.2, 0.23, 0.3, 0.5)
+    end
+    love.graphics.rectangle("line", tabX1, y, tabW, tabH, 5, 5)
+    love.graphics.setFont(fontSmall)
+    love.graphics.setColor(currentMode == "reactor" and {0.8, 0.9, 1.0} or {0.4, 0.45, 0.55})
+    love.graphics.printf("REACTOR", tabX1, y + 5, tabW, "center")
+
+    -- Bomb tab
+    local bHover = mx >= tabX2 and mx <= tabX2 + tabW and my >= y and my <= y + tabH
+    if currentMode == "bomb" then
+        love.graphics.setColor(0.35, 0.15, 0.1, 1)
+    elseif bHover then
+        love.graphics.setColor(0.15, 0.1, 0.08, 1)
+    else
+        love.graphics.setColor(0.08, 0.09, 0.12, 1)
+    end
+    love.graphics.rectangle("fill", tabX2, y, tabW, tabH, 5, 5)
+    if currentMode == "bomb" then
+        love.graphics.setColor(COLOR_DANGER[1], COLOR_DANGER[2], COLOR_DANGER[3], 0.6)
+    else
+        love.graphics.setColor(0.2, 0.23, 0.3, 0.5)
+    end
+    love.graphics.rectangle("line", tabX2, y, tabW, tabH, 5, 5)
+    love.graphics.setFont(fontSmall)
+    love.graphics.setColor(currentMode == "bomb" and {1.0, 0.8, 0.7} or {0.4, 0.45, 0.55})
+    love.graphics.printf("FISSION BOMB", tabX2, y + 5, tabW, "center")
+
+    y = y + tabH + 12
+
+    -- Subtitle
     love.graphics.setFont(fontSmall)
     love.graphics.setColor(0.5, 0.55, 0.65)
-    love.graphics.printf("REACTOR CONTROL PANEL", pad, y, SIDEBAR_W - pad * 2, "center")
-    y = y + 30
+    if currentMode == "reactor" then
+        love.graphics.printf("REACTOR CONTROL PANEL", pad, y, SIDEBAR_W - pad * 2, "center")
+    else
+        love.graphics.printf("WEAPON SIMULATION", pad, y, SIDEBAR_W - pad * 2, "center")
+    end
+    y = y + 25
 
     drawDivider(y, pad)
     y = y + 15
 
+    if currentMode == "bomb" then
+        -- Delegate to bomb module for sidebar content
+        bombSim.drawSidebar(pad, y, SIDEBAR_W, H, drawDivider, drawStatLabel)
+    else
     -- Stats
     love.graphics.setFont(fontMed)
 
@@ -1071,6 +1150,8 @@ function drawSidebar()
     love.graphics.printf(btnText, btnX, btnY + 6, btnW, "center")
     y = y + btnH + 8
 
+    end -- end reactor/bomb sidebar conditional
+
     -- Footer: "made with <3 by vinny" with colored parts
     love.graphics.setFont(fontSmall)
     local part1 = "made with "
@@ -1148,6 +1229,22 @@ end
 -- Input
 ---------------------------------------------------------------------
 function love.mousepressed(x, y, button)
+    -- Mode tab clicks
+    if button == 1 then
+        for mode, r in pairs(modeTabRects) do
+            if x >= r.x and x <= r.x + r.w and y >= r.y and y <= r.y + r.h then
+                if currentMode ~= mode then
+                    currentMode = mode
+                    if mode == "bomb" then
+                        atom3dViewer.active = false
+                        bombSim.reset()
+                    end
+                end
+                return
+            end
+        end
+    end
+
     -- 3D viewer button
     if button == 1 and atom3dBtnRect then
         local r = atom3dBtnRect
@@ -1162,18 +1259,29 @@ function love.mousepressed(x, y, button)
             return
         end
     end
-    if button == 1 and inReactor(x, y) then
+    if currentMode == "reactor" and button == 1 and inReactor(x, y) then
         fireNeutron(x, y)
     end
 end
 
 function love.keypressed(key)
+    -- V key works in both modes (3D viewer)
+    if key == "v" then
+        atom3dViewer.toggle()
+        return
+    end
+
+    if currentMode == "bomb" then
+        bombSim.keypressed(key)
+        return
+    end
+
+    -- Reactor mode keys
     if key == "space" then
         paused = not paused
     elseif key == "r" then
         resetReactor()
     elseif key == "c" then
-        -- Toggle control rods
         if controlRodTarget < 0.5 then
             controlRodTarget = 1.0
         else
@@ -1192,8 +1300,6 @@ function love.keypressed(key)
         simSpeed = clamp(simSpeed - 0.25, 0.25, 5.0)
     elseif key == "a" then
         addAtoms(5)
-    elseif key == "v" then
-        atom3dViewer.toggle()
     end
 end
 

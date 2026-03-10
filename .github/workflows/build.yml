@@ -10,7 +10,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build .love file
-        run: zip -9 -r atom.love main.lua conf.lua flux.lua atom3d.lua g3d/
+        run: zip -9 -r atom.love main.lua conf.lua flux.lua atom3d.lua bomb.lua g3d/
 
       - name: Upload .love artifact
         uses: actions/upload-artifact@v4

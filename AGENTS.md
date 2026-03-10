@@ -20,7 +20,8 @@ control rods, a temperature system, and a meltdown state.
 
 ```
 atom/
-├── main.lua    — All game logic: physics, rendering, input, UI
+├── main.lua    — Reactor simulation: physics, rendering, input, UI
+├── bomb.lua    — Fission bomb (implosion-type) simulation module
 ├── atom3d.lua  — Interactive 3D uranium atom viewer (powered by g3d)
 ├── conf.lua    — LÖVE2D window/engine configuration
 ├── flux.lua    — Tweening library (third-party, MIT license, by rxi)
@@ -30,9 +31,9 @@ atom/
 
 ## Architecture
 
-The simulation logic lives in `main.lua`, with the 3D atom viewer split into
-`atom3d.lua`. There is no ECS, no scene graph — just flat tables of entities
-updated in `love.update(dt)` and drawn in `love.draw()`.
+The simulation has two main modes — **Reactor** and **Fission Bomb** — selectable
+via tabs in the sidebar. The reactor simulation lives in `main.lua`, the bomb
+simulation in `bomb.lua`, and the 3D atom viewer in `atom3d.lua`.
 
 ### Key Concepts
 
@@ -45,6 +46,7 @@ updated in `love.update(dt)` and drawn in `love.draw()`.
 | **Neutron Energy**| Fast (~2 MeV) from fission, thermalizes via moderator over time   |
 | **Temperature**   | Rises with fission; Doppler broadening reduces reactivity (neg. coeff) |
 | **Meltdown**      | Game-over state when reactor temperature goes critical             |
+| **Bomb Sim**      | Implosion-type weapon: compression → supercritical chain reaction  |
 
 ### Simulation Loop
 
@@ -72,15 +74,26 @@ updated in `love.update(dt)` and drawn in `love.draw()`.
 
 ## Controls
 
+### Reactor Mode
+
 | Input              | Action                              |
 |--------------------|-------------------------------------|
-| **Left Click**     | Fire a neutron into the reactor     |
+| **Left Click**     | Inject a neutron at click position  |
 | **Space**          | Pause / unpause simulation          |
 | **R**              | Reset the reactor                   |
 | **C**              | Toggle control rods (in/out)        |
 | **Up / Down**      | Adjust control rod insertion ±10%   |
 | **+ / -**          | Adjust simulation speed (0.25–5×)   |
 | **A**              | Add 5 more U-235 atoms              |
+| **V**              | Toggle 3D atom viewer               |
+
+### Bomb Mode
+
+| Input              | Action                              |
+|--------------------|-------------------------------------|
+| **Space**          | Arm the weapon                      |
+| **Enter**          | Detonate (must be armed first)      |
+| **R**              | Reset the bomb                      |
 | **V**              | Toggle 3D atom viewer               |
 
 ## Coding Conventions
@@ -104,10 +117,12 @@ Requires [LÖVE2D](https://love2d.org/) 11.x installed on your system.
 ## Editing Guidelines
 
 - `flux.lua`, `flux.md`, and `g3d/` are **third-party vendored files** — do not modify
-- All simulation tuning knobs are in the constants block at the top of `main.lua`
-  (lines ~10–45). Tweak these before touching logic.
+- Reactor tuning knobs are in the constants block at the top of `main.lua`.
+  Bomb tuning knobs are at the top of `bomb.lua`.
+- Each simulation mode (reactor, bomb) manages its own state, update, and draw.
+  `main.lua` delegates to `bomb.lua` when in bomb mode via `bombSim.*` calls.
 - When adding new entity types, follow the existing pattern: a table-of-tables
   with an `alive` flag, spawned in a function, updated in `love.update`,
   drawn in `love.draw`, and cleaned up with a reverse-iteration removal pass.
 - The sidebar is drawn procedurally with hardcoded Y offsets — budget ~20px per
-  new stat line.
+  new stat line. Mode tabs at the top switch between reactor and bomb sidebar content.

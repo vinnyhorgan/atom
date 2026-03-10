@@ -5,7 +5,7 @@
 <h1 align="center">Atom</h1>
 
 <p align="center">
-  <em>A beautiful, physically-accurate simulation of uranium-235 fission chain reactions.</em><br/>
+  <em>A beautiful, physically-accurate simulation of uranium-235 fission — from reactor control to nuclear detonation.</em><br/>
   Built with <a href="https://love2d.org/">LÖVE2D</a> and Lua. Zero external assets — every pixel is procedurally generated.
 </p>
 
@@ -21,9 +21,20 @@
 
 ## ✨ What is this?
 
-**Atom** lets you play reactor operator. Click inside the reactor vessel to fire
-thermal neutrons at U-235 atoms and watch the chain reaction unfold. Manage
-control rods, keep an eye on core temperature, and try not to melt down. ☢️
+**Atom** is an educational simulator showing the two main applications of nuclear
+fission: **controlled energy production** (reactor) and **uncontrolled energy
+release** (bomb). Switch between modes with a click.
+
+### ⚡ Reactor Mode
+Click inside the reactor vessel to inject thermal neutrons at U-235 atoms and
+watch the chain reaction unfold. Manage control rods, keep an eye on core
+temperature, and try not to melt down. ☢️
+
+### 💣 Bomb Mode
+Witness an implosion-type fission weapon in action. Arm the device, detonate,
+and watch the explosive lenses compress the uranium pit to supercritical density.
+An uncontrolled chain reaction follows — no moderator, no control rods, just
+exponential energy release.
 
 The simulation models real nuclear physics — neutron energy spectra, cross-section
 probabilities, moderator thermalization, Doppler broadening, delayed neutrons,
@@ -56,15 +67,27 @@ love atom.love
 
 ## 🎮 Controls
 
+### Reactor Mode
+
 | Key | Action |
 |-----|--------|
-| **Click** | Fire a neutron into the reactor |
+| **Click** | Inject a neutron at click position |
 | **A** | Add more U-235 fuel |
 | **C** | Toggle control rods in/out |
 | **↑ / ↓** | Fine-tune control rod insertion (±10%) |
 | **+ / −** | Speed up / slow down simulation |
 | **Space** | Pause |
 | **R** | Reset reactor |
+| **V** | Toggle 3D atom viewer |
+
+### Bomb Mode
+
+| Key | Action |
+|-----|--------|
+| **Space** | Arm the weapon |
+| **Enter** | Detonate (must be armed) |
+| **R** | Reset bomb |
+| **V** | Toggle 3D atom viewer |
 
 ## ⚛️ Physics Model
 
@@ -83,11 +106,14 @@ real U-235 fission physics:
 
 ```
 atom/
-├── main.lua   — All simulation logic, physics, rendering, and UI
-├── conf.lua   — LÖVE window & engine configuration
-├── flux.lua   — Tweening library (vendored, by rxi)
-├── logo.png   — Project logo
-└── AGENTS.md  — Developer reference & coding conventions
+├── main.lua    — Reactor simulation: physics, rendering, input, UI
+├── bomb.lua    — Fission bomb (implosion-type) simulation module
+├── atom3d.lua  — Interactive 3D uranium atom viewer (powered by g3d)
+├── conf.lua    — LÖVE window & engine configuration
+├── flux.lua    — Tweening library (vendored, by rxi)
+├── g3d/        — 3D engine library (vendored, by groverburger)
+├── logo.png    — Project logo
+└── AGENTS.md   — Developer reference & coding conventions
 ```
 
 ## 💚 Credits
@@ -95,3 +121,4 @@ atom/
 Made with **<3** by **vinny**.
 
 Tweening powered by [flux](https://github.com/rxi/flux) by rxi (MIT license).
+3D rendering powered by [g3d](https://github.com/groverburger/g3d) by groverburger (MIT license).
