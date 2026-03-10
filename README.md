@@ -26,15 +26,21 @@ fission: **controlled energy production** (reactor) and **uncontrolled energy
 release** (bomb). Switch between modes with a click.
 
 ### ⚡ Reactor Mode
-Click inside the reactor vessel to inject thermal neutrons at U-235 atoms and
-watch the chain reaction unfold. Manage control rods, keep an eye on core
-temperature, and try not to melt down. ☢️
+Click anywhere in the reactor vessel to inject thermal neutrons near U-235 atoms
+and watch the chain reaction unfold. Manage control rods, add fuel, keep an eye
+on core temperature, and try not to melt down. ☢️
 
 ### 💣 Bomb Mode
 Witness an implosion-type fission weapon in action. Arm the device, detonate,
 and watch the explosive lenses compress the uranium pit to supercritical density.
 An uncontrolled chain reaction follows — no moderator, no control rods, just
 exponential energy release.
+
+### 🔬 3D Atom Viewer
+Press **V** in either mode to explore a physically-accurate 3D model of the
+uranium-235 atom — 92 electrons orbiting across 7 shells (K through Q), a
+nucleus with proton and neutron bumps, all rendered with real-time lighting.
+Drag to orbit, scroll to zoom.
 
 The simulation models real nuclear physics — neutron energy spectra, cross-section
 probabilities, moderator thermalization, Doppler broadening, delayed neutrons,
@@ -94,6 +100,8 @@ love atom.love
 This isn't just a pretty animation — the neutron interactions are modeled after
 real U-235 fission physics:
 
+### Reactor Physics
+
 | Concept | How it works |
 |---------|-------------|
 | **Neutron energy** | Fission neutrons are born fast (~2 MeV). They lose energy over time as they scatter through the water moderator, eventually reaching thermal energies (~0.025 eV) where fission cross-sections are highest. |
@@ -102,14 +110,24 @@ real U-235 fission physics:
 | **Delayed neutrons** | ~0.65% of fission neutrons (β_eff) are delayed, emerging 0.2–12 seconds after fission from daughter nuclei decay. These are what make real reactors controllable! |
 | **Control rods** | Absorb neutrons on contact, reducing the neutron population and suppressing the chain reaction. |
 
+### Bomb Physics
+
+| Concept | How it works |
+|---------|-------------|
+| **Implosion** | Shaped explosive lenses fire inward simultaneously, compressing the uranium pit to ~3× its normal density — well beyond critical mass. |
+| **No moderator** | Unlike a reactor, there's no water to slow neutrons. The chain reaction runs entirely on fast neutrons. |
+| **Supercritical mass** | Compression increases density so much that nearly every neutron collision causes fission (~85% probability). |
+| **Tamper/reflector** | A surrounding shell reflects escaping neutrons back into the core, maximizing the chain reaction. |
+| **Timescale** | The entire chain reaction happens in microseconds — the simulation slows it down so you can watch. |
+
 ## 🏗️ Project Structure
 
 ```
 atom/
-├── main.lua    — Reactor simulation: physics, rendering, input, UI
+├── main.lua    — Reactor simulation: physics, rendering, input, UI, mode switching
 ├── bomb.lua    — Fission bomb (implosion-type) simulation module
 ├── atom3d.lua  — Interactive 3D uranium atom viewer (powered by g3d)
-├── conf.lua    — LÖVE window & engine configuration
+├── conf.lua    — LÖVE window config (1280×800, resizable, min 1280×800, 4× MSAA)
 ├── flux.lua    — Tweening library (vendored, by rxi)
 ├── g3d/        — 3D engine library (vendored, by groverburger)
 ├── logo.png    — Project logo
