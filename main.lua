@@ -504,15 +504,15 @@ function love.update(dt)
             end
 
             -- Absorbed by control rod?
-            if neutronHitsRod(n.x, n.y) then
-                n.alive = false
-                -- Small absorption spark
+            if not n.dying and neutronHitsRod(n.x, n.y) then
+                n.dying = true
+                n.fadeAlpha = 1.0
                 sparkPS:setPosition(n.x, n.y)
                 sparkPS:emit(3)
             end
 
             -- Collide with atoms?
-            if n.alive then
+            if n.alive and not n.dying then
                 for _, atom in ipairs(atoms) do
                     if atom.alive and dist(n.x, n.y, atom.x, atom.y) < CAPTURE_RADIUS then
                         -- User-fired neutrons (gen 0) always fission on first contact
@@ -545,9 +545,13 @@ function love.update(dt)
                                 triggerFission(atom, n)
                             elseif roll < fissionProb + captureProb then
                                 -- RADIATIVE CAPTURE (absorbed, no fission)
-                                n.alive = false
+                                n.dying = true
+                                n.fadeAlpha = 1.0
                                 sparkPS:setPosition(n.x, n.y)
-                                sparkPS:emit(3)
+                                sparkPS:emit(5)
+                                -- Brief flash on absorbing atom
+                                table.insert(flashes, { x = atom.x, y = atom.y, radius = 3, alpha = 0.5 })
+                                flux.to(flashes[#flashes], 0.3, { radius = 20, alpha = 0 }):ease("expoout")
                             else
                                 -- ELASTIC SCATTER (redirect, lose energy)
                                 local scatterAngle = randomAngle()
@@ -557,9 +561,13 @@ function love.update(dt)
                                 n.energy = energy * (0.4 + love.math.random() * 0.4)
                                 n.x = atom.x + math.cos(scatterAngle) * (CAPTURE_RADIUS + 2)
                                 n.y = atom.y + math.sin(scatterAngle) * (CAPTURE_RADIUS + 2)
-                                -- Scatter spark feedback
+                                -- Visible scatter flash on the atom
+                                table.insert(flashes, { x = atom.x, y = atom.y, radius = 3, alpha = 0.7 })
+                                flux.to(flashes[#flashes], 0.35, { radius = 25, alpha = 0 }):ease("expoout")
                                 sparkPS:setPosition(atom.x, atom.y)
-                                sparkPS:emit(4)
+                                sparkPS:emit(6)
+                                -- Brief glow pulse on the deflecting atom
+                                atom.glow = 1.0
                             end
                         end
                         break
@@ -567,8 +575,22 @@ function love.update(dt)
                 end
             end
 
-            -- Max age
-            if n.age > 10 then n.alive = false end
+            -- Max age — begin fade-out
+            if n.age > 15 and not n.dying then
+                n.dying = true
+                n.fadeAlpha = 1.0
+            end
+
+            -- Fade-out animation
+            if n.dying then
+                n.fadeAlpha = (n.fadeAlpha or 1.0) - 2.5 * sdt
+                if n.fadeAlpha <= 0 then
+                    n.alive = false
+                    -- Small puff when neutron expires
+                    sparkPS:setPosition(n.x, n.y)
+                    sparkPS:emit(2)
+                end
+            end
 
             if n.alive then aliveCount = aliveCount + 1 end
         end
@@ -618,10 +640,14 @@ function love.update(dt)
         end
     end
 
-    -- Atom wobble
+    -- Atom wobble + scatter glow decay
     for _, atom in ipairs(atoms) do
         if atom.alive then
             atom.pulsePhase = atom.pulsePhase + sdt * 2
+            if atom.glow and atom.glow > 0 then
+                atom.glow = atom.glow - 3 * sdt
+                if atom.glow < 0 then atom.glow = 0 end
+            end
         end
     end
 end
@@ -812,6 +838,16 @@ function drawAtoms()
             love.graphics.setColor(0.8, 1, 0.85, 0.6)
             love.graphics.setFont(fontSmall)
             love.graphics.printf("U-235", atom.x - 20, atom.y + r + 4, 40, "center")
+
+            -- Scatter glow ring (flashes when neutron deflects off this atom)
+            if atom.glow and atom.glow > 0 then
+                love.graphics.setColor(1, 0.9, 0.4, atom.glow * 0.5)
+                love.graphics.setLineWidth(2)
+                love.graphics.circle("line", atom.x, atom.y, r * 1.8 + (1 - atom.glow) * 10)
+                love.graphics.setLineWidth(1)
+                love.graphics.setColor(1, 0.95, 0.6, atom.glow * 0.15)
+                love.graphics.circle("fill", atom.x, atom.y, r * 2.0)
+            end
         end
     end
 end
@@ -819,6 +855,7 @@ end
 function drawNeutrons()
     for _, n in ipairs(neutrons) do
         if n.alive then
+            local alpha = n.dying and (n.fadeAlpha or 0) or 1.0
             -- Energy-based color (fast=orange/red, thermal=yellow/gold)
             local t = clamp((n.energy or 2.0) / 2.0, 0, 1)
             local nr = lerp(COLOR_NEUTRON[1], COLOR_NEUTRON_FAST[1], t)
@@ -826,15 +863,15 @@ function drawNeutrons()
             local nb = lerp(COLOR_NEUTRON[3], COLOR_NEUTRON_FAST[3], t)
 
             -- Glow
-            love.graphics.setColor(nr, ng, nb, 0.2)
+            love.graphics.setColor(nr, ng, nb, 0.2 * alpha)
             love.graphics.circle("fill", n.x, n.y, NEUTRON_RADIUS * 4)
 
             -- Core
-            love.graphics.setColor(nr, ng, nb, 0.9)
+            love.graphics.setColor(nr, ng, nb, 0.9 * alpha)
             love.graphics.circle("fill", n.x, n.y, NEUTRON_RADIUS)
 
             -- Bright center
-            love.graphics.setColor(1, 1, 0.9, 1)
+            love.graphics.setColor(1, 1, 0.9, alpha)
             love.graphics.circle("fill", n.x, n.y, NEUTRON_RADIUS * 0.5)
         end
     end
