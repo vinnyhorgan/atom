@@ -33,7 +33,7 @@ local FISSION_PRODUCT_R   = 12
 local CAPTURE_RADIUS      = ATOM_RADIUS + NEUTRON_RADIUS
 local FISSION_ENERGY      = 200   -- MeV per fission event
 local NEUTRONS_PER_FISSION = {2, 3} -- random range (avg 2.43 for U-235)
-local MODERATION_RATE     = 6.0   -- energy decay rate (simulates water moderator)
+local MODERATION_RATE     = 10.0  -- energy decay rate (simulates water moderator)
 local DELAYED_NEUTRON_FRAC = 0.0065 -- beta-effective for U-235
 
 -- Control rod geometry
@@ -343,7 +343,7 @@ function fireNeutron(tx, ty)
         alive = true,
         age = 0,
         generation = 0,
-        energy = 0.1, -- pre-moderated from beam port source
+        energy = 0.025, -- thermal neutron from moderated beam port source
     })
     neutronsFired = neutronsFired + 1
 
@@ -483,7 +483,7 @@ function love.update(dt)
                     if atom.alive and dist(n.x, n.y, atom.x, atom.y) < CAPTURE_RADIUS then
                         local energy = n.energy or 2.0
                         -- Thermal factor: thermal neutrons have ~300x higher cross-section
-                        local thermalFactor = 1.0 / (1.0 + energy * 20)
+                        local thermalFactor = 1.0 / (1.0 + energy * 5)
                         -- Doppler broadening (negative temperature coefficient)
                         local dopplerFactor = 1.0 / (1.0 + reactorTemp * 0.002)
 
@@ -492,7 +492,7 @@ function love.update(dt)
 
                         if love.math.random() < interactionProb then
                             -- Fission: σ_f/σ_total (thermal: ~84%, fast: ~21%)
-                            local fissionProb = (0.20 + 0.64 * thermalFactor) * dopplerFactor
+                            local fissionProb = (0.25 + 0.60 * thermalFactor) * dopplerFactor
                             -- Capture: σ_γ/σ_total (thermal: ~14%, fast: ~2%)
                             local captureProb = 0.02 + 0.12 * thermalFactor
 
@@ -512,7 +512,7 @@ function love.update(dt)
                                 local currentSpeed = math.sqrt(n.vx*n.vx + n.vy*n.vy)
                                 n.vx = math.cos(scatterAngle) * currentSpeed
                                 n.vy = math.sin(scatterAngle) * currentSpeed
-                                n.energy = energy * (0.3 + love.math.random() * 0.4)
+                                n.energy = energy * (0.4 + love.math.random() * 0.4)
                                 -- Push out of capture radius
                                 n.x = atom.x + math.cos(scatterAngle) * (CAPTURE_RADIUS + 2)
                                 n.y = atom.y + math.sin(scatterAngle) * (CAPTURE_RADIUS + 2)

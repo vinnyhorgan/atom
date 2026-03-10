@@ -47,7 +47,7 @@ entities updated in `love.update(dt)` and drawn in `love.draw()`.
 ### Simulation Loop
 
 1. Neutrons move at speed scaled by √(energy) — fast neutrons zoom, thermal crawl
-2. Neutron energy decays exponentially (moderator simulation, rate = 6/s)
+2. Neutron energy decays exponentially (moderator simulation, rate = 10/s)
 3. Collision checks: interaction probability depends on neutron energy (σ_total)
 4. Interaction outcomes: fission (~84% thermal), elastic scatter, or radiative capture
 5. Doppler broadening: higher temperature reduces effective fission cross-section
